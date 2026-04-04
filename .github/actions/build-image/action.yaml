@@ -1,10 +1,37 @@
-name: 'Build Docker Image'
-description: 'This action builds a docker image'
+name: 'Build and Push Docker Image to Amazon ECR'
+description: 'This action builds a docker image and optionally pushes it to Amazon ECR.'
 author: 'Masashi Tsuru'
+
+inputs:
+  IMAGE_TAG:
+    description: 'docker image tag'
+    required: false
+  PUSH_IMAGE:
+    description: 'Whether to push the Docker image to ECR (true/false)'
+    required: true
+    default: 'false'
+  AWS_REGION:
+    description: 'AWS region (required if PUSH_IMAGE is true)'
+    required: false
+  AWS_ROLE_ARN:
+    description: 'AWS role ARN (required if PUSH_IMAGE is true)'
+    required: false
+  AWS_REGISTRY:
+    description: 'AWS ECR registry (required if PUSH_IMAGE is true)'
+    required: false
 
 runs:
   using: 'composite'
   steps:
+    - name: Validate required inputs for ECR
+      if: ${{ inputs.PUSH_IMAGE == 'true' }}
+      shell: bash
+      run: |
+        if [[ -z "${{ inputs.AWS_REGION }}" || -z "${{ inputs.AWS_ROLE_ARN }}" || -z "${{ inputs.AWS_REGISTRY }}" ]]; then
+          echo "Error: AWS_REGION, AWS_ROLE_ARN, and AWS_REGISTRY must be provided when PUSH_IMAGE is true."
+          exit 1
+        fi
+
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
@@ -25,10 +52,22 @@ runs:
         mkdir -p /tmp/.buildx-cache/webapp-php
         mkdir -p /tmp/.buildx-cache/webapp-nginx
 
+    - name: Configure AWS credentials (if PUSH_IMAGE is true)
+      if: ${{ inputs.PUSH_IMAGE == 'true' }}
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.AWS_ROLE_ARN }}
+        aws-region: ${{ inputs.AWS_REGION }}
+
+    - name: Login to Amazon ECR (if PUSH_IMAGE is true)
+      if: ${{ inputs.PUSH_IMAGE == 'true' }}
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
     - name: Build and Push image
       uses: docker/bake-action@v5
       with:
-        push: false
+        push: ${{ inputs.PUSH_IMAGE == 'true' }}
         load: true
         set: |
           *.platform=linux/amd64
@@ -38,3 +77,5 @@ runs:
           webserver.cache-to=type=local,dest=/tmp/.buildx-cache/webapp-nginx,mode=max
       env:
         DOCKER_BUILD_RECORD_UPLOAD: false # to use in docker/bake-action
+        REGISTRY_HOST: ${{ inputs.AWS_REGISTRY }} # to use in compose.yaml
+        TAG: ${{ inputs.IMAGE_TAG }} # to use in compose.yaml
